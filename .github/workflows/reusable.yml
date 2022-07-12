@@ -1,0 +1,90 @@
+name: "Build & Puplish"
+
+on:
+  workflow_dispatch:
+    # Just run it
+  # push:
+  #   branches:    
+  #     - 'main'  
+  #   tags:
+  #     - 'v*'
+  #     - '!**-test'
+
+jobs:
+  
+  build-test:
+    uses: infinity-swap/ci-wf/.github/workflows/build-n-test.yml@main
+    with:
+      test-script: dev/dfx.run.tests.sh
+      skip-test: ${{ github.ref_type == 'tag' }}
+      output-artifact: artiract-hello
+      # disable-cache: true
+
+      # This is kinda tricky.
+      # We must provide some script that will put everything for publishing in the .artifact directory
+      artifact-script: |
+        cargo update
+        ./scripts/build-artifact.sh
+
+    secrets:
+      gh_token: ${{ secrets.GH_PKG_TOKEN }}
+      gh_login: ${{ secrets.GH_PKG_LOGIN }}
+  
+  upgrade-check:
+    needs: [build-test]
+    uses: infinity-swap/ci-wf/.github/workflows/dfx-upgrade-check.yml@main
+    with:
+      latest-image: ghcr.io/infinity-swap/example-dev-image:latest
+      upgrade-script: ./scripts/upgrade-check.sh
+      input-artifact: artiract-hello
+      skip-check: ${{ github.ref_type == 'tag' }}
+    secrets:
+      gh_token: ${{ secrets.GH_PKG_TOKEN }}
+      gh_login: ${{ secrets.GH_PKG_LOGIN }}
+
+  publish-bin:
+    needs: [upgrade-check]
+    uses: infinity-swap/ci-wf/.github/workflows/publish-wrapped-artifact.yml@main
+    with:
+      input-artifact: artiract-hello
+      output-image-name: example-wrapped-wasm
+      # Condition to use latest tag
+      output-image-tag-latest: ${{ github.ref_type == 'branch' && github.ref == 'refs/heads/main' }}
+      # Condition to publish docker image
+      push-image: ${{ (github.event_name != 'pull_request' && github.ref == 'refs/heads/main') ||  github.ref_type == 'tag' }}
+
+    secrets:
+      gh_token: ${{ secrets.GH_PKG_TOKEN }}
+      gh_login: ${{ secrets.GH_PKG_LOGIN }}
+
+  publish-dev:
+    needs: [upgrade-check]
+    uses: infinity-swap/ci-wf/.github/workflows/publish-dev-image.yml@main
+    with:
+      input-artifact: artiract-hello
+      dockerfile: ./Dockerfile.dev
+      output-image-name: example-dev-image
+      # Condition to use latest tag
+      output-image-tag-latest: ${{ github.ref_type == 'branch' && github.ref == 'refs/heads/main' }}
+      # Condition to publish docker image
+      push-image: ${{ (github.event_name != 'pull_request' && github.ref == 'refs/heads/main') ||  github.ref_type == 'tag' }}
+
+    secrets:
+      gh_token: ${{ secrets.GH_PKG_TOKEN }}
+      gh_login: ${{ secrets.GH_PKG_LOGIN }}
+
+  bump:
+    if: ${{ github.ref_type == 'branch' && github.ref == 'refs/heads/main' }}
+    needs: [publish-bin, publish-dev]
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        fetch-depth: '0'
+    - name: Bump version and push tag
+      uses: anothrNick/github-tag-action@1.36.0
+      env:
+        GITHUB_TOKEN: ${{ secrets.GH_PKG_TOKEN }}
+        WITH_V: true
+        # DRY_RUN: true
+
